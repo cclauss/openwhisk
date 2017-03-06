@@ -308,7 +308,7 @@ class WskBasicTests
 
             wsk.action.get(name, fieldFilter = Some("name")).stdout should include(s"""$successMsg name\n"$name"""")
             wsk.action.get(name, fieldFilter = Some("version")).stdout should include(s"""$successMsg version\n"0.0.1"""")
-            wsk.action.get(name, fieldFilter = Some("exec")).stdout should include regex (s"""$successMsg exec\n\\{\\s+"kind":\\s+"nodejs:6",\\s+"code":\\s+"\\/\\*\\*\\\\n \\* Hello, world.\\\\n \\*\\/\\\\nfunction main\\(params\\) \\{\\\\n    console.log\\('hello', params.payload\\+'!'\\);\\\\n\\}\\\\n"\n\\}""")
+            wsk.action.get(name, fieldFilter = Some("exec")).stdout should include regex (s"""$successMsg exec\n\\{\\s+"kind":\\s+"nodejs:6",\\s+"code":\\s+"\\/\\*\\*[\\\\r]*\\\\n \\* Hello, world.[\\\\r]*\\\\n \\*\\/[\\\\r]*\\\\nfunction main\\(params\\) \\{[\\\\r]*\\\\n    console.log\\('hello', params.payload\\+'!'\\);[\\\\r]*\\\\n\\}[\\\\r]*\\\\n"\n\\}""")
             wsk.action.get(name, fieldFilter = Some("parameters")).stdout should include regex (s"""$successMsg parameters\n\\[\\s+\\{\\s+"key":\\s+"payload",\\s+"value":\\s+"test"\\s+\\}\\s+\\]""")
             wsk.action.get(name, fieldFilter = Some("annotations")).stdout should include regex (s"""$successMsg annotations\n\\[\\s+\\{\\s+"key":\\s+"exec",\\s+"value":\\s+"nodejs:6"\\s+\\}\\s+\\]""")
             wsk.action.get(name, fieldFilter = Some("limits")).stdout should include regex (s"""$successMsg limits\n\\{\\s+"timeout":\\s+60000,\\s+"memory":\\s+256,\\s+"logs":\\s+10\\s+\\}""")
@@ -339,33 +339,15 @@ class WskBasicTests
             }
     }
 
-    /**
-     * Tests creating an nodejs action that throws a whisk.error() response. The error message thrown by the
-     * whisk.error() should be returned.
-     */
-    it should "create and invoke a blocking action resulting in a whisk.error response" in withAssetCleaner(wskprops) {
-        (wp, assetHelper) =>
-            // one returns whisk.error the other just calls whisk.error
-            val names = Seq("applicationError1", "applicationError2")
-            names foreach { name =>
-                assetHelper.withCleaner(wsk.action, name) {
-                    (action, _) => action.create(name, Some(TestUtils.getTestActionFilename(s"$name.js")))
-                }
-
-                wsk.action.invoke(name, blocking = true, expectedExitCode = 246)
-                    .stderr should include regex (""""error": "This error thrown on purpose by the action."""")
-            }
-    }
-
     it should "create and invoke a blocking action resulting in an application error response" in withAssetCleaner(wskprops) {
         (wp, assetHelper) =>
-            val name = "applicationError3"
+            val name = "applicationError"
             assetHelper.withCleaner(wsk.action, name) {
-                (action, _) => action.create(name, Some(TestUtils.getTestActionFilename("applicationError3.js")))
+                (action, _) => action.create(name, Some(TestUtils.getTestActionFilename("applicationError.js")))
             }
 
-            wsk.action.invoke(name, blocking = true, result = true, expectedExitCode = 246)
-              .stderr.parseJson.asJsObject shouldBe JsObject("error" -> JsBoolean(true))
+            wsk.action.invoke(name, blocking = true, expectedExitCode = 246)
+                .stderr should include regex (""""error": "This error thrown on purpose by the action."""")
     }
 
     it should "create and invoke a blocking action resulting in an failed promise" in withAssetCleaner(wskprops) {
@@ -487,16 +469,16 @@ class WskBasicTests
             withActivation(wsk.activation, run) {
                 activation =>
                     activation.response.result shouldBe Some(dynamicParams.toJson)
-                    activation.duration shouldBe 0L         // shouldn't exist but CLI generates it
-                    activation.end shouldBe Instant.EPOCH   // shouldn't exist but CLI generates it
+                    activation.duration shouldBe 0L // shouldn't exist but CLI generates it
+                    activation.end shouldBe Instant.EPOCH // shouldn't exist but CLI generates it
             }
 
             val runWithNoParams = wsk.trigger.fire(name, Map())
             withActivation(wsk.activation, runWithNoParams) {
                 activation =>
                     activation.response.result shouldBe Some(JsObject())
-                    activation.duration shouldBe 0L         // shouldn't exist but CLI generates it
-                    activation.end shouldBe Instant.EPOCH   // shouldn't exist but CLI generates it
+                    activation.duration shouldBe 0L // shouldn't exist but CLI generates it
+                    activation.end shouldBe Instant.EPOCH // shouldn't exist but CLI generates it
             }
 
             wsk.trigger.list().stdout should include(name)
@@ -706,9 +688,9 @@ class WskBasicTests
 
     behavior of "Wsk Namespace CLI"
 
-    it should "list namespaces" in {
+    it should "return a list of exactly one namespace" in {
         wsk.namespace.list().
-            stdout should include regex ("@|guest")
+            stdout.lines should have size 2 // headline + namespace
     }
 
     it should "list entities in default namespace" in {
@@ -746,7 +728,7 @@ class WskBasicTests
                     wsk.activation.get(activation.activationId, fieldFilter = Some("name")).stdout should include(s"""$successMsg name\n"$name"""")
                     wsk.activation.get(activation.activationId, fieldFilter = Some("version")).stdout should include(s"""$successMsg version\n"0.0.1"""")
                     wsk.activation.get(activation.activationId, fieldFilter = Some("publish")).stdout should include(s"""$successMsg publish\nfalse""")
-                    wsk.activation.get(activation.activationId, fieldFilter = Some("subject")).stdout should include regex (s"""(?i)$successMsg subject\n$ns_regex_list""")
+                    wsk.activation.get(activation.activationId, fieldFilter = Some("subject")).stdout should include regex (s"""(?i)$successMsg subject\n""")
                     wsk.activation.get(activation.activationId, fieldFilter = Some("activationid")).stdout should include(s"""$successMsg activationid\n"${activation.activationId}""")
                     wsk.activation.get(activation.activationId, fieldFilter = Some("start")).stdout should include regex (s"""$successMsg start\n\\d""")
                     wsk.activation.get(activation.activationId, fieldFilter = Some("end")).stdout should include regex (s"""$successMsg end\n\\d""")

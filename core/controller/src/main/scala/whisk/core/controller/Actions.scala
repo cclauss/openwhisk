@@ -54,10 +54,7 @@ import whisk.http.Messages._
  * in order to implement the actions API.
  */
 object WhiskActionsApi {
-    def requiredProperties = WhiskServices.requiredProperties ++
-        WhiskEntityStore.requiredProperties ++
-        WhiskActivationStore.requiredProperties ++
-        Map(WhiskConfig.actionSequenceDefaultLimit -> null)
+    def requiredProperties = Map(WhiskConfig.actionSequenceDefaultLimit -> null)
 
     /** Grace period after action timeout limit to poll for result. */
     protected[core] val blockingInvokeGrace = 5 seconds
@@ -254,6 +251,9 @@ trait WhiskActionsApi
                                     case Failure(t: RecordTooLargeException) =>
                                         logging.info(this, s"[POST] action payload was too large")
                                         terminate(RequestEntityTooLarge)
+                                    case Failure(RejectRequest(code, message)) =>
+                                        logging.info(this, s"[POST] action rejected with code $code: $message")
+                                        terminate(code, message)
                                     case Failure(t: Throwable) =>
                                         logging.error(this, s"[POST] action activation failed: ${t.getMessage}")
                                         terminate(InternalServerError)
@@ -391,7 +391,11 @@ trait WhiskActionsApi
                 checkSequenceActionLimits(entityName, seq.components) map {
                     _ => makeWhiskAction(content.replace(seq), entityName)
                 }
-            case _ => Future successful { makeWhiskAction(content, entityName) }
+            case supportedExec if !supportedExec.deprecated =>
+                Future successful makeWhiskAction(content, entityName)
+            case deprecatedExec =>
+                Future failed RejectRequest(BadRequest, runtimeDeprecated(deprecatedExec))
+
         } getOrElse Future.failed(RejectRequest(BadRequest, "exec undefined"))
     }
 
@@ -403,9 +407,16 @@ trait WhiskActionsApi
                 checkSequenceActionLimits(FullyQualifiedEntityName(action.namespace, action.name), seq.components) map {
                     _ => updateWhiskAction(content.replace(seq), action)
                 }
-            case _ => Future successful { updateWhiskAction(content, action) }
+            case supportedExec if !supportedExec.deprecated =>
+                Future successful updateWhiskAction(content, action)
+            case deprecatedExec =>
+                Future failed RejectRequest(BadRequest, runtimeDeprecated(deprecatedExec))
         } getOrElse {
-            Future successful { updateWhiskAction(content, action) }
+            if (!action.exec.deprecated) {
+                Future successful updateWhiskAction(content, action)
+            } else {
+                Future failed RejectRequest(BadRequest, runtimeDeprecated(action.exec))
+            }
         }
     }
 

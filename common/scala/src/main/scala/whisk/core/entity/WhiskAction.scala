@@ -144,36 +144,11 @@ case class WhiskAction(
      * explicitly inside containers.
      */
     def containerInitializer: Option[JsObject] = {
-        def getNodeInitializer(code: String, binary: Boolean, main: Option[String]) = {
-            JsObject(
-                "name" -> name.toJson,
-                "binary" -> JsBoolean(binary),
-                "main" -> JsString(main.getOrElse("main")),
-                "code" -> JsString(code))
-        }
-
         exec match {
-            case n: NodeJSAbstractExec =>
-                Some(getNodeInitializer(n.code, n.binary, n.main))
-            case s: SwiftAbstractExec =>
-                Some(JsObject(
-                    "name" -> name.toJson,
-                    "code" -> s.code.toJson,
-                    "main" -> s.main.getOrElse("main").toJson))
-            case JavaExec(jar, main) =>
-                Some(JsObject(
-                    "name" -> name.toJson,
-                    "jar" -> jar.toJson,
-                    "main" -> main.toJson))
-            case PythonExec(code, main) =>
-                Some(JsObject(
-                    "name" -> name.toJson,
-                    "code" -> code.toJson,
-                    "main" -> main.getOrElse("main").toJson))
-            case b @ BlackBoxExec(image, code) =>
-                Some(code map {
-                    c => JsObject("code" -> c.toJson, "binary" -> JsBoolean(b.binary))
-                } getOrElse JsObject())
+            case c: CodeExec[_] =>
+                val code = Option(c.codeAsJson).filter(_ != JsNull).map("code" -> _)
+                val base = Map("name" -> name.toJson, "binary" -> c.binary.toJson, "main" -> c.entryPoint.getOrElse("main").toJson)
+                Some(JsObject(base ++ code))
             case _ => None
         }
     }
@@ -209,7 +184,7 @@ object WhiskAction
 
     def containerImageName(exec: CodeExec[_], registry: String, prefix: String, tag: String): String = {
         exec match {
-            case b @ BlackBoxExec(image, _) =>
+            case b @ BlackBoxExec(image, _, _) =>
                 if (b.pull) {
                     image
                 } else {

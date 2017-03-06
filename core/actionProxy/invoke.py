@@ -35,9 +35,11 @@ if "DOCKER_HOST" in os.environ:
     try:
         DOCKER_HOST = re.compile("tcp://(.*):[\d]+").findall(os.environ["DOCKER_HOST"])[0]
     except Exception:
-        print("cannot determine docker host from %s" % os.environ["DOCKER_HOST"])
+        print("cannot determine docker host from %s" %
+              os.environ["DOCKER_HOST"])
         sys.exit(-1)
-DEST="http://%s:8080" % DOCKER_HOST
+DEST = "http://%s:8080" % DOCKER_HOST
+
 
 def content_from_args(args):
     if len(args) == 0:
@@ -58,26 +60,35 @@ def content_from_args(args):
     except:
         return in_str
 
+
 def init(args):
     main = args[1] if len(args) == 2 else "main"
-    args = args[0]
+    args = args[0] if len(args) > 1 else None
 
-    if args.endswith(".zip"):
+    if args and args.endswith(".zip"):
         with open(args, "rb") as fp:
             contents = fp.read().encode("base64")
         binary = True
-    else:
+    elif args:
         with(codecs.open(args, "r", "utf-8")) as fp:
             contents = fp.read()
         binary = False
-    r = requests.post("%s/init" % DEST, json = { "value" : { "code": contents, "binary": binary, "main": main } })
-    print r.text
+    else:
+        contents = None
+        binary = False
+
+    r = requests.post("%s/init" % DEST, json={"value": {"code": contents,
+                                                        "binary": binary,
+                                                        "main": main}})
+    print(r.text)
+
 
 def run(args):
     value = content_from_args(args)
-    #print "Sending value: %s..." % json.dumps(value)[0:40]
-    r = requests.post("%s/run" % DEST, json = { "value" : value })
-    print r.text
+    # print("Sending value: %s..." % json.dumps(value)[0:40])
+    r = requests.post("%s/run" % DEST, json={"value": value})
+    print(r.text)
+
 
 if sys.argv[1] == "init":
     init(sys.argv[2:])

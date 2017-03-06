@@ -161,14 +161,14 @@ class SchemaTests extends FlatSpec with BeforeAndAfter with Matchers {
     behavior of "EntityName"
 
     it should "accept well formed names" in {
-        val paths = Seq("a", "a b", "a@b.c", "_a", "_", "_ _", "a0", "a 0", "a.0", "a@@", "0", "0.0", "0.0.0", "0a", "0.a", "a"*EntityName.ENTITY_NAME_MAX_LENGTH)
+        val paths = Seq("a", "a b", "a@b.c", "_a", "_", "_ _", "a0", "a 0", "a.0", "a@@", "0", "0.0", "0.0.0", "0a", "0.a", "a" * EntityName.ENTITY_NAME_MAX_LENGTH)
         paths.foreach { n =>
             assert(EntityName(n).toString == n)
         }
     }
 
     it should "reject malformed names" in {
-        val paths = Seq(null, "", " ", " xxx", "xxx ", "/", " /", "/ ", "0 ", "_ ", "a  ", "a \t", "a\n", "a"*(EntityName.ENTITY_NAME_MAX_LENGTH+1))
+        val paths = Seq(null, "", " ", " xxx", "xxx ", "/", " /", "/ ", "0 ", "_ ", "a  ", "a \t", "a\n", "a" * (EntityName.ENTITY_NAME_MAX_LENGTH + 1))
         paths.foreach {
             p => an[IllegalArgumentException] should be thrownBy EntityName(p)
         }
@@ -320,6 +320,7 @@ class SchemaTests extends FlatSpec with BeforeAndAfter with Matchers {
             JsObject("kind" -> "nodejs".toJson, "code" -> "js1".toJson, "binary" -> false.toJson),
             JsObject("kind" -> "nodejs".toJson, "code" -> "js2".toJson, "binary" -> false.toJson, "foo" -> "bar".toJson),
             JsObject("kind" -> "swift".toJson, "code" -> "swift1".toJson, "binary" -> false.toJson),
+            JsObject("kind" -> "swift:3".toJson, "code" -> b64Body.toJson, "binary" -> true.toJson),
             JsObject("kind" -> "nodejs".toJson, "code" -> b64Body.toJson, "binary" -> true.toJson))
 
         val execs = json.map { e => Exec.serdes.read(e) }
@@ -327,7 +328,8 @@ class SchemaTests extends FlatSpec with BeforeAndAfter with Matchers {
         assert(execs(0) == Exec.js("js1") && json(0).compactPrint == Exec.js("js1").toString)
         assert(execs(1) == Exec.js("js2") && json(1).compactPrint != Exec.js("js2").toString) // ignores unknown properties
         assert(execs(2) == Exec.swift("swift1") && json(2).compactPrint == Exec.swift("swift1").toString)
-        assert(execs(3) == Exec.js(b64Body) && json(3).compactPrint == Exec.js(b64Body).toString)
+        assert(execs(3) == Exec.swift3(b64Body) && json(3).compactPrint == Exec.swift3(b64Body).toString)
+        assert(execs(4) == Exec.js(b64Body) && json(4).compactPrint == Exec.js(b64Body).toString)
     }
 
     it should "properly deserialize and reserialize JSON blackbox" in {
@@ -335,14 +337,33 @@ class SchemaTests extends FlatSpec with BeforeAndAfter with Matchers {
         val contents = b64.encodeToString("tarball".getBytes)
         val json = Seq[JsObject](
             JsObject("kind" -> "blackbox".toJson, "image" -> "container1".toJson, "binary" -> false.toJson),
-            JsObject("kind" -> "blackbox".toJson, "image" -> "container1".toJson, "binary" -> true.toJson, "code" -> contents.toJson))
+            JsObject("kind" -> "blackbox".toJson, "image" -> "container1".toJson, "binary" -> true.toJson, "code" -> contents.toJson),
+            JsObject("kind" -> "blackbox".toJson, "image" -> "container1".toJson, "binary" -> true.toJson, "code" -> contents.toJson, "main" -> "naim".toJson))
 
         val execs = json.map { e => Exec.serdes.read(e) }
 
-        assert(execs(0) == Exec.bb("container1") && json(0).compactPrint == Exec.bb("container1").toString)
-        assert(execs(1) == Exec.bb("container1", contents) && json(1).compactPrint == Exec.bb("container1", contents).toString)
-        assert(execs(0) == Exec.serdes.read(JsObject("kind" -> "blackbox".toJson, "image" -> "container1".toJson, "binary" -> false.toJson, "code" -> " ".toJson)))
-        assert(execs(0) == Exec.serdes.read(JsObject("kind" -> "blackbox".toJson, "image" -> "container1".toJson, "binary" -> false.toJson, "code" -> "".toJson)))
+        execs(0) shouldBe Exec.bb("container1")
+        execs(1) shouldBe Exec.bb("container1", contents)
+        execs(2) shouldBe Exec.bb("container1", contents, Some("naim"))
+
+        json(0).compactPrint shouldBe Exec.bb("container1").toString
+        json(1).compactPrint shouldBe Exec.bb("container1", contents).toString
+        json(2).compactPrint shouldBe Exec.bb("container1", contents, Some("naim")).toString
+
+        execs(0) shouldBe Exec.serdes.read(JsObject("kind" -> "blackbox".toJson, "image" -> "container1".toJson, "binary" -> false.toJson, "code" -> " ".toJson))
+        execs(0) shouldBe Exec.serdes.read(JsObject("kind" -> "blackbox".toJson, "image" -> "container1".toJson, "binary" -> false.toJson, "code" -> "".toJson))
+    }
+
+    it should "exclude undefined code in whisk action initializer" in {
+        WhiskAction(EntityPath("a"), EntityName("b"), Exec.bb("container1")).containerInitializer shouldBe {
+            Some(JsObject("name" -> "b".toJson, "binary" -> false.toJson, "main" -> "main".toJson))
+        }
+        WhiskAction(EntityPath("a"), EntityName("b"), Exec.bb("container1", "xyz")).containerInitializer shouldBe {
+            Some(JsObject("name" -> "b".toJson, "binary" -> false.toJson, "main" -> "main".toJson, "code" -> "xyz".toJson))
+        }
+        WhiskAction(EntityPath("a"), EntityName("b"), Exec.bb("container1", "", Some("naim"))).containerInitializer shouldBe {
+            Some(JsObject("name" -> "b".toJson, "binary" -> false.toJson, "main" -> "naim".toJson))
+        }
     }
 
     it should "reject malformed JSON" in {
@@ -381,11 +402,11 @@ class SchemaTests extends FlatSpec with BeforeAndAfter with Matchers {
     }
 
     it should "serialize to json" in {
-        val execs = Seq(Exec.bb("container"), Exec.js("js"), Exec.js("js"), Exec.swift("swft")).map { _.toString }
+        val execs = Seq(Exec.bb("container"), Exec.js("js"), Exec.js("js"), Exec.swift("swift")).map { _.toString }
         assert(execs(0) == JsObject("kind" -> "blackbox".toJson, "image" -> "container".toJson, "binary" -> false.toJson).compactPrint)
         assert(execs(1) == JsObject("kind" -> "nodejs".toJson, "code" -> "js".toJson, "binary" -> false.toJson).compactPrint)
         assert(execs(2) == JsObject("kind" -> "nodejs".toJson, "code" -> "js".toJson, "binary" -> false.toJson).compactPrint)
-        assert(execs(3) == JsObject("kind" -> "swift".toJson, "code" -> "swft".toJson, "binary" -> false.toJson).compactPrint)
+        assert(execs(3) == JsObject("kind" -> "swift".toJson, "code" -> "swift".toJson, "binary" -> false.toJson).compactPrint)
     }
 
     behavior of "Parameter"

@@ -24,9 +24,10 @@ import scala.language.postfixOps
 import scala.util.Try
 
 import spray.json._
+import spray.json.DefaultJsonProtocol._
+
 import whisk.core.entity.ArgNormalizer.trim
-import whisk.core.entity.Attachments.Attachment
-import whisk.core.entity.Attachments.Inline
+import whisk.core.entity.Attachments._
 import whisk.core.entity.size.SizeInt
 import whisk.core.entity.size.SizeString
 import whisk.core.entity.size.SizeOptionString
@@ -43,10 +44,13 @@ import whisk.core.entity.size.SizeOptionString
  *   code  : code to execute if kind is supported,
  *   image : container name when kind is "blackbox",
  *   binary: for some runtimes that allow binary attachments,
- *   main  : name of the entrypoint function, when using a non-default value (for Java, the name of the main class)" }
+ *   main  : name of the entry point function, when using a non-default value (for Java, the name of the main class)" }
  */
 sealed abstract class Exec(val kind: String) extends ByteSizeable {
     override def toString = Exec.serdes.write(this).compactPrint
+
+    // Whether the exec kind is deprecated (once deprecated, code may not be executed or updated).
+    val deprecated: Boolean = false
 }
 
 /**
@@ -54,11 +58,14 @@ sealed abstract class Exec(val kind: String) extends ByteSizeable {
  * code explicitly (i.e., any action other than a sequence).
  */
 sealed abstract class CodeExec[T <% SizeConversion](kind: String) extends Exec(kind) {
-    // The executable code
+    /** An entrypoint (typically name of 'main' function). 'None' means a default value will be used. */
+    val entryPoint: Option[String]
+
+    /** The executable code. */
     val code: T
 
-    // An entrypoint (typically name of 'main' function). 'None' means a default value will be used.
-    val entryPoint: Option[String]
+    /** Serialize code to a JSON value. */
+    def codeAsJson: JsValue
 
     /**
      * Container image name.
@@ -73,54 +80,51 @@ sealed abstract class CodeExec[T <% SizeConversion](kind: String) extends Exec(k
     /** Indicates if a container image is required from the registry to execute the action. */
     val pull = false
 
-    // Whether the code is stored in a text-readable or binary format.
-    def binary: Boolean = false
+    /**
+     * Indicates whether the code is stored in a text-readable or binary format.
+     * The binary bit may be read from the database but currently it is always computed
+     * when the "code" is moved to an attachment this may get changed to avoid recomputing
+     * the binary property.
+     */
+    lazy val binary = {
+        code match {
+            case s: String => Exec.isBinaryCode(s)
+            case _         => false
+        }
+    }
 
     override def size = code.sizeInBytes
 }
 
-sealed abstract class NodeJSAbstractExec(kind: String) extends CodeExec[String](kind) {
-    val main: Option[String]
-
-    override val entryPoint = main
-    // the binary bit may be read from the database but currently it is always computed
-    // when the "code" is moved to an attachment this may get changed to avoid recomputing
-    // the binary property
-    override lazy val binary = Exec.isBinaryCode(code)
+protected[core] abstract class CodeExecAsString(kind: String) extends CodeExec[String](kind) {
+    override def codeAsJson = JsString(code)
 }
 
-protected[core] case class NodeJSExec(code: String, main: Option[String]) extends NodeJSAbstractExec(Exec.NODEJS)
-protected[core] case class NodeJS6Exec(code: String, main: Option[String]) extends NodeJSAbstractExec(Exec.NODEJS6)
+protected[core] case class NodeJSExec(code: String, override val entryPoint: Option[String]) extends CodeExecAsString(Exec.NODEJS)
+protected[core] case class NodeJS6Exec(code: String, override val entryPoint: Option[String]) extends CodeExecAsString(Exec.NODEJS6)
 
-sealed abstract class SwiftAbstractExec(kind: String) extends CodeExec[String](kind) {
-    val main: Option[String]
-
-    override val entryPoint = main
+protected[core] case class SwiftExec(code: String, override val entryPoint: Option[String]) extends CodeExecAsString(Exec.SWIFT) {
+    override val deprecated = true
 }
 
-protected[core] case class SwiftExec(code: String, main: Option[String]) extends SwiftAbstractExec(Exec.SWIFT)
-protected[core] case class Swift3Exec(code: String, main: Option[String]) extends SwiftAbstractExec(Exec.SWIFT3)
+protected[core] case class Swift3Exec(code: String, override val entryPoint: Option[String]) extends CodeExecAsString(Exec.SWIFT3)
+
+protected[core] case class PythonExec(code: String, override val entryPoint: Option[String]) extends CodeExecAsString(Exec.PYTHON)
 
 protected[core] case class JavaExec(code: Attachment[String], main: String) extends CodeExec[Attachment[String]](Exec.JAVA) {
-    override val entryPoint: Option[String] = Some(main)
-    override val binary = true
+    override val entryPoint = Some(main)
+    override def codeAsJson = code.toJson
+    override lazy val binary = true
     override val sentinelledLogs = false
     override def size = super.size + main.sizeInBytes
-}
-
-protected[core] case class PythonExec(code: String, main: Option[String]) extends CodeExec[String](Exec.PYTHON) {
-    override val entryPoint: Option[String] = main
 }
 
 /**
  * @param image the image name
  * @param code an optional script or zip archive (as base64 encoded) string
  */
-protected[core] case class BlackBoxExec(override val image: String, code: Option[String]) extends CodeExec[Option[String]](Exec.BLACKBOX) {
-    override val entryPoint: Option[String] = None
-    // the binary bit may be read from the database but currently it is always computed
-    // when the "code" is moved to an attachment this may get changed to avoid recomputing
-    // the binary property
+protected[core] case class BlackBoxExec(override val image: String, code: Option[String], override val entryPoint: Option[String]) extends CodeExec[Option[String]](Exec.BLACKBOX) {
+    override def codeAsJson = code.toJson
     override lazy val binary = code map { Exec.isBinaryCode(_) } getOrElse false
     override val sentinelledLogs = image == Exec.BLACKBOX_SKELETON
     override val pull = image != Exec.BLACKBOX_SKELETON
@@ -159,34 +163,29 @@ protected[core] object Exec
     protected[core] def swift3(code: String, main: Option[String] = None): Exec = Swift3Exec(trim(code), main.map(_.trim))
     protected[core] def java(jar: String, main: String): Exec = JavaExec(Inline(trim(jar)), trim(main))
     protected[core] def sequence(components: Vector[FullyQualifiedEntityName]): Exec = SequenceExec(components)
-    protected[core] def bb(image: String): Exec = BlackBoxExec(trim(image), None)
-    protected[core] def bb(image: String, code: String): Exec = BlackBoxExec(trim(image), Some(trim(code)).filter(_.nonEmpty))
+    protected[core] def bb(image: String): Exec = BlackBoxExec(trim(image), None, None)
+    protected[core] def bb(image: String, code: String, main: Option[String] = None): Exec = BlackBoxExec(trim(image), Some(trim(code)).filter(_.nonEmpty), main)
 
     private def attFmt[T: JsonFormat] = Attachments.serdes[T]
 
     override protected[core] implicit val serdes = new RootJsonFormat[Exec] {
         override def write(e: Exec) = e match {
-            case n: NodeJSAbstractExec =>
-                val base = Map("kind" -> JsString(n.kind), "code" -> JsString(n.code), "binary" -> JsBoolean(n.binary))
-                n.main.map(m => JsObject(base + ("main" -> JsString(m)))).getOrElse(JsObject(base))
-
-            case s: SwiftAbstractExec =>
-                val base = Map("kind" -> JsString(s.kind), "code" -> JsString(s.code), "binary" -> JsBoolean(s.binary))
-                s.main.map(m => JsObject(base + ("main" -> JsString(m)))).getOrElse(JsObject(base))
+            case c: CodeExecAsString =>
+                val base = Map("kind" -> JsString(c.kind), "code" -> JsString(c.code), "binary" -> JsBoolean(c.binary))
+                val main = c.entryPoint.map("main" -> JsString(_))
+                JsObject(base ++ main)
 
             case j @ JavaExec(jar, main) =>
                 JsObject("kind" -> JsString(Exec.JAVA), "jar" -> attFmt[String].write(jar), "main" -> JsString(main), "binary" -> JsBoolean(j.binary))
-
-            case p @ PythonExec(code, main) =>
-                val base = Map("kind" -> JsString(Exec.PYTHON), "code" -> JsString(code), "binary" -> JsBoolean(p.binary))
-                main.map(m => JsObject(base + ("main" -> JsString(m)))).getOrElse(JsObject(base))
 
             case SequenceExec(comp) =>
                 JsObject("kind" -> JsString(Exec.SEQUENCE), "components" -> comp.map(_.qualifiedNameWithLeadingSlash).toJson)
 
             case b: BlackBoxExec =>
                 val base = Map("kind" -> JsString(Exec.BLACKBOX), "image" -> JsString(b.image), "binary" -> JsBoolean(b.binary))
-                b.code.filter(_.trim.nonEmpty).map(c => JsObject(base + ("code" -> JsString(c)))).getOrElse(JsObject(base))
+                val code = b.code.filter(_.trim.nonEmpty).map("code" -> JsString(_))
+                val main = b.entryPoint.map("main" -> JsString(_))
+                JsObject(base ++ code ++ main)
         }
 
         override def read(v: JsValue) = {
@@ -259,16 +258,19 @@ protected[core] object Exec
                         case Seq(_)           => throw new DeserializationException(s"if defined, 'code' must a string defined in 'exec' for '${Exec.BLACKBOX}' actions")
                         case _                => None
                     }
-                    BlackBoxExec(image, code)
+                    BlackBoxExec(image, code, optMainField)
 
                 case _ => throw new DeserializationException(s"kind '$kind' not in $runtimes")
             }
         }
     }
 
-    protected[entity] lazy val b64decoder = Base64.getDecoder()
-    protected[entity] def isBinaryCode(code: String): Boolean = {
-        val t = code.trim
-        (t.length % 4 == 0) && Try(Exec.b64decoder.decode(t)).isSuccess
+    def isBinaryCode(code: String): Boolean = {
+        if (code != null) {
+            val t = code.trim
+            (t.length > 0) && (t.length % 4 == 0) && Try(b64decoder.decode(t)).isSuccess
+        } else false
     }
+
+    private lazy val b64decoder = Base64.getDecoder()
 }
